@@ -31,6 +31,22 @@ type WinnerRequestBody = {
 	image?: unknown;
 };
 
+type QuizWordRow = {
+	id: number;
+	abbreviation: string;
+	full_name: string;
+	description: string | null;
+	created_at: string;
+	updated_at: string;
+};
+
+type QuizWordRequestBody = {
+	abbreviation?: unknown;
+	fullName?: unknown;
+	full_name?: unknown;
+	description?: unknown;
+};
+
 const jsonHeaders = {
 	'Access-Control-Allow-Origin': '*',
 	'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
@@ -164,6 +180,55 @@ async function getWinnerSummary(request: Request, env: WorkerEnv) {
 	return json({ summary: results });
 }
 
+async function getQuizWords(_request: Request, env: WorkerEnv) {
+	const { results } = await env.pick_your_favorite
+		.prepare(
+			`SELECT id, abbreviation, full_name, description, created_at, updated_at
+			 FROM quiz_words
+			 ORDER BY created_at DESC, id DESC`,
+		)
+		.run<QuizWordRow>();
+
+	return json({ words: results });
+}
+
+async function createQuizWord(request: Request, env: WorkerEnv) {
+	let body: QuizWordRequestBody;
+
+	try {
+		body = (await request.json()) as QuizWordRequestBody;
+	} catch {
+		return error('Request body must be valid JSON');
+	}
+
+	const abbreviation = requiredString(body.abbreviation).toUpperCase();
+	const fullName = requiredString(body.fullName ?? body.full_name);
+	const description = optionalString(body.description);
+
+	if (!abbreviation) {
+		return error('abbreviation is required');
+	}
+
+	if (!fullName) {
+		return error('fullName is required');
+	}
+
+	const result = await env.pick_your_favorite
+		.prepare(
+			`INSERT INTO quiz_words (abbreviation, full_name, description)
+			 VALUES (?, ?, ?)
+			 ON CONFLICT(abbreviation) DO UPDATE SET
+				full_name = excluded.full_name,
+				description = excluded.description,
+				updated_at = CURRENT_TIMESTAMP
+			 RETURNING id, abbreviation, full_name, description, created_at, updated_at`,
+		)
+		.bind(abbreviation, fullName, description)
+		.first<QuizWordRow>();
+
+	return json({ word: result }, { status: 201 });
+}
+
 export default {
 	async fetch(request, env): Promise<Response> {
 		const workerEnv = env as WorkerEnv;
@@ -183,6 +248,14 @@ export default {
 
 		if (url.pathname === '/api/winners/summary' && request.method === 'GET') {
 			return getWinnerSummary(request, workerEnv);
+		}
+
+		if (url.pathname === '/api/quiz-words' && request.method === 'GET') {
+			return getQuizWords(request, workerEnv);
+		}
+
+		if (url.pathname === '/api/quiz-words' && request.method === 'POST') {
+			return createQuizWord(request, workerEnv);
 		}
 
 		return error('Not found', 404);
