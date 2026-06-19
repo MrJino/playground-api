@@ -15,6 +15,7 @@ type StoredWinner = {
 
 type StoredQuizWord = {
 	id: number;
+	subject_id: number | null;
 	abbreviation: string;
 	full_name: string;
 	description: string | null;
@@ -22,9 +23,18 @@ type StoredQuizWord = {
 	updated_at: string;
 };
 
-function createMockEnv(seed: StoredWinner[] = [], quizWordSeed: StoredQuizWord[] = []) {
+type StoredSubject = {
+	id: number;
+	title: string;
+	description: string | null;
+	created_at: string;
+	updated_at: string;
+};
+
+function createMockEnv(seed: StoredWinner[] = [], quizWordSeed: StoredQuizWord[] = [], subjectSeed: StoredSubject[] = []) {
 	const winners = [...seed];
 	const quizWords = [...quizWordSeed];
+	const subjects = [...subjectSeed];
 
 	const db = {
 		prepare(sql: string) {
@@ -36,9 +46,19 @@ function createMockEnv(seed: StoredWinner[] = [], quizWordSeed: StoredQuizWord[]
 					return this;
 				},
 				async run() {
-					if (sql.includes('FROM quiz_words')) {
+					if (sql.includes('FROM subjects')) {
 						return {
-							results: [...quizWords].sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id - a.id),
+							results: [...subjects].sort((a, b) => a.title.localeCompare(b.title) || a.id - b.id),
+						};
+					}
+
+					if (sql.includes('FROM quiz_words')) {
+						const filteredWords = sql.includes('WHERE subject_id = ?')
+							? quizWords.filter((word) => word.subject_id === Number(params[0]))
+							: quizWords;
+
+						return {
+							results: [...filteredWords].sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id - a.id),
 						};
 					}
 
@@ -78,20 +98,67 @@ function createMockEnv(seed: StoredWinner[] = [], quizWordSeed: StoredQuizWord[]
 					};
 				},
 				async first() {
-					if (sql.includes('quiz_words')) {
-						const [abbreviation, fullName, description] = params;
-						const normalizedAbbreviation = String(abbreviation);
-						const current = quizWords.find((word) => word.abbreviation === normalizedAbbreviation);
+					if (sql.includes('subjects')) {
+						const isUpdate = sql.trim().startsWith('UPDATE subjects');
+						const [title, description, id] = params;
+
+						if (isUpdate) {
+							const current = subjects.find((subject) => subject.id === Number(id));
+
+							if (!current) {
+								return null;
+							}
+
+							current.title = String(title);
+							current.description = description === null ? null : String(description);
+							current.updated_at = '2026-04-27 16:30:00';
+							return current;
+						}
+
+						const current = subjects.find((subject) => subject.title === String(title));
 
 						if (current) {
+							current.description = description === null ? null : String(description);
+							current.updated_at = '2026-04-27 16:30:00';
+							return current;
+						}
+
+						const subject: StoredSubject = {
+							id: subjects.length + 1,
+							title: String(title),
+							description: description === null ? null : String(description),
+							created_at: '2026-04-27 16:00:00',
+							updated_at: '2026-04-27 16:00:00',
+						};
+
+						subjects.push(subject);
+
+						return subject;
+					}
+
+					if (sql.includes('quiz_words')) {
+						const isUpdate = sql.trim().startsWith('UPDATE quiz_words');
+						const [subjectId, abbreviation, fullName, description, id] = params;
+						const normalizedAbbreviation = String(abbreviation);
+						const current = isUpdate
+							? quizWords.find((word) => word.id === Number(id))
+							: quizWords.find((word) => word.abbreviation === normalizedAbbreviation);
+
+						if (current) {
+							current.subject_id = subjectId === null ? null : Number(subjectId);
 							current.full_name = String(fullName);
 							current.description = description === null ? null : String(description);
 							current.updated_at = '2026-04-27 16:30:00';
 							return current;
 						}
 
+						if (isUpdate) {
+							return null;
+						}
+
 						const quizWord: StoredQuizWord = {
 							id: quizWords.length + 1,
+							subject_id: subjectId === null ? null : Number(subjectId),
 							abbreviation: normalizedAbbreviation,
 							full_name: String(fullName),
 							description: description === null ? null : String(description),
@@ -224,6 +291,7 @@ describe('quiz words API', () => {
 			new IncomingRequest('http://example.com/api/quiz-words', {
 				method: 'POST',
 				body: JSON.stringify({
+					subjectId: 1,
 					abbreviation: 'api',
 					fullName: 'Application Programming Interface',
 					description: 'Interface for software communication',
@@ -234,6 +302,7 @@ describe('quiz words API', () => {
 		expect(response.status).toBe(201);
 		await expect(response.json()).resolves.toMatchObject({
 			word: {
+				subject_id: 1,
 				abbreviation: 'API',
 				full_name: 'Application Programming Interface',
 				description: 'Interface for software communication',
@@ -247,6 +316,7 @@ describe('quiz words API', () => {
 			createMockEnv([], [
 				{
 					id: 1,
+					subject_id: null,
 					abbreviation: 'API',
 					full_name: 'Application Programming Interface',
 					description: 'Interface for software communication',
@@ -259,6 +329,37 @@ describe('quiz words API', () => {
 		expect(response.status).toBe(200);
 		await expect(response.json()).resolves.toMatchObject({
 			words: [{ abbreviation: 'API', full_name: 'Application Programming Interface' }],
+		});
+	});
+
+	it('lists quiz words for a subject', async () => {
+		const response = await fetchWithEnv(
+			new IncomingRequest('http://example.com/api/quiz-words?subjectId=2'),
+			createMockEnv([], [
+				{
+					id: 1,
+					subject_id: 1,
+					abbreviation: 'API',
+					full_name: 'Application Programming Interface',
+					description: null,
+					created_at: '2026-04-27 16:00:00',
+					updated_at: '2026-04-27 16:00:00',
+				},
+				{
+					id: 2,
+					subject_id: 2,
+					abbreviation: 'SQL',
+					full_name: 'Structured Query Language',
+					description: null,
+					created_at: '2026-04-27 16:10:00',
+					updated_at: '2026-04-27 16:10:00',
+				},
+			]),
+		);
+
+		expect(response.status).toBe(200);
+		await expect(response.json()).resolves.toMatchObject({
+			words: [{ abbreviation: 'SQL' }],
 		});
 	});
 
@@ -275,6 +376,48 @@ describe('quiz words API', () => {
 		expect(response.status).toBe(400);
 		await expect(response.json()).resolves.toEqual({
 			error: 'fullName is required',
+		});
+	});
+});
+
+describe('subjects API', () => {
+	it('creates a subject', async () => {
+		const response = await fetchWithEnv(
+			new IncomingRequest('http://example.com/api/subjects', {
+				method: 'POST',
+				body: JSON.stringify({
+					title: 'Computer Science',
+					description: 'CS abbreviations',
+				}),
+			}),
+		);
+
+		expect(response.status).toBe(201);
+		await expect(response.json()).resolves.toMatchObject({
+			subject: {
+				title: 'Computer Science',
+				description: 'CS abbreviations',
+			},
+		});
+	});
+
+	it('lists subjects', async () => {
+		const response = await fetchWithEnv(
+			new IncomingRequest('http://example.com/api/subjects'),
+			createMockEnv([], [], [
+				{
+					id: 1,
+					title: 'Computer Science',
+					description: 'CS abbreviations',
+					created_at: '2026-04-27 16:00:00',
+					updated_at: '2026-04-27 16:00:00',
+				},
+			]),
+		);
+
+		expect(response.status).toBe(200);
+		await expect(response.json()).resolves.toMatchObject({
+			subjects: [{ title: 'Computer Science' }],
 		});
 	});
 });

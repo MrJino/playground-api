@@ -33,6 +33,7 @@ type WinnerRequestBody = {
 
 type QuizWordRow = {
 	id: number;
+	subject_id: number | null;
 	abbreviation: string;
 	full_name: string;
 	description: string | null;
@@ -41,9 +42,26 @@ type QuizWordRow = {
 };
 
 type QuizWordRequestBody = {
+	id?: unknown;
+	subjectId?: unknown;
+	subject_id?: unknown;
 	abbreviation?: unknown;
 	fullName?: unknown;
 	full_name?: unknown;
+	description?: unknown;
+};
+
+type SubjectRow = {
+	id: number;
+	title: string;
+	description: string | null;
+	created_at: string;
+	updated_at: string;
+};
+
+type SubjectRequestBody = {
+	id?: unknown;
+	title?: unknown;
 	description?: unknown;
 };
 
@@ -90,6 +108,14 @@ function parseCardId(value: unknown) {
 	}
 
 	return null;
+}
+
+function parseOptionalInteger(value: unknown) {
+	if (value === undefined || value === null || value === '') {
+		return null;
+	}
+
+	return parseCardId(value);
 }
 
 async function getWinners(request: Request, env: WorkerEnv) {
@@ -181,13 +207,30 @@ async function getWinnerSummary(request: Request, env: WorkerEnv) {
 }
 
 async function getQuizWords(_request: Request, env: WorkerEnv) {
-	const { results } = await env.pick_your_favorite
-		.prepare(
-			`SELECT id, abbreviation, full_name, description, created_at, updated_at
-			 FROM quiz_words
-			 ORDER BY created_at DESC, id DESC`,
-		)
-		.run<QuizWordRow>();
+	const url = new URL(_request.url);
+	const subjectId = parseOptionalInteger(url.searchParams.get('subjectId') ?? url.searchParams.get('subject_id'));
+
+	if (subjectId === null && (url.searchParams.has('subjectId') || url.searchParams.has('subject_id'))) {
+		return error('subjectId must be an integer');
+	}
+
+	const statement =
+		subjectId === null
+			? env.pick_your_favorite.prepare(
+					`SELECT id, subject_id, abbreviation, full_name, description, created_at, updated_at
+					 FROM quiz_words
+					 ORDER BY created_at DESC, id DESC`,
+				)
+			: env.pick_your_favorite
+					.prepare(
+						`SELECT id, subject_id, abbreviation, full_name, description, created_at, updated_at
+						 FROM quiz_words
+						 WHERE subject_id = ?
+						 ORDER BY created_at DESC, id DESC`,
+					)
+					.bind(subjectId);
+
+	const { results } = await statement.run<QuizWordRow>();
 
 	return json({ words: results });
 }
@@ -201,7 +244,9 @@ async function createQuizWord(request: Request, env: WorkerEnv) {
 		return error('Request body must be valid JSON');
 	}
 
+	const id = parseOptionalInteger(body.id);
 	const abbreviation = requiredString(body.abbreviation).toUpperCase();
+	const subjectId = parseOptionalInteger(body.subjectId ?? body.subject_id);
 	const fullName = requiredString(body.fullName ?? body.full_name);
 	const description = optionalString(body.description);
 
@@ -213,20 +258,113 @@ async function createQuizWord(request: Request, env: WorkerEnv) {
 		return error('fullName is required');
 	}
 
+	if (subjectId === null) {
+		return error('subjectId is required and must be an integer');
+	}
+
+	if (id === null && body.id !== undefined) {
+		return error('id must be an integer');
+	}
+
+	if (id !== null) {
+		const result = await env.pick_your_favorite
+			.prepare(
+				`UPDATE quiz_words
+				 SET subject_id = ?, abbreviation = ?, full_name = ?, description = ?, updated_at = CURRENT_TIMESTAMP
+				 WHERE id = ?
+				 RETURNING id, subject_id, abbreviation, full_name, description, created_at, updated_at`,
+			)
+			.bind(subjectId, abbreviation, fullName, description, id)
+			.first<QuizWordRow>();
+
+		if (!result) {
+			return error('quiz word not found', 404);
+		}
+
+		return json({ word: result });
+	}
+
 	const result = await env.pick_your_favorite
 		.prepare(
-			`INSERT INTO quiz_words (abbreviation, full_name, description)
-			 VALUES (?, ?, ?)
-			 ON CONFLICT(abbreviation) DO UPDATE SET
+			`INSERT INTO quiz_words (subject_id, abbreviation, full_name, description)
+			 VALUES (?, ?, ?, ?)
+			 ON CONFLICT(subject_id, abbreviation) DO UPDATE SET
+				subject_id = excluded.subject_id,
 				full_name = excluded.full_name,
 				description = excluded.description,
 				updated_at = CURRENT_TIMESTAMP
-			 RETURNING id, abbreviation, full_name, description, created_at, updated_at`,
+			 RETURNING id, subject_id, abbreviation, full_name, description, created_at, updated_at`,
 		)
-		.bind(abbreviation, fullName, description)
+		.bind(subjectId, abbreviation, fullName, description)
 		.first<QuizWordRow>();
 
 	return json({ word: result }, { status: 201 });
+}
+
+async function getSubjects(_request: Request, env: WorkerEnv) {
+	const { results } = await env.pick_your_favorite
+		.prepare(
+			`SELECT id, title, description, created_at, updated_at
+			 FROM subjects
+			 ORDER BY title ASC, id ASC`,
+		)
+		.run<SubjectRow>();
+
+	return json({ subjects: results });
+}
+
+async function createOrUpdateSubject(request: Request, env: WorkerEnv) {
+	let body: SubjectRequestBody;
+
+	try {
+		body = (await request.json()) as SubjectRequestBody;
+	} catch {
+		return error('Request body must be valid JSON');
+	}
+
+	const id = parseOptionalInteger(body.id);
+	const title = requiredString(body.title);
+	const description = optionalString(body.description);
+
+	if (id === null && body.id !== undefined) {
+		return error('id must be an integer');
+	}
+
+	if (!title) {
+		return error('title is required');
+	}
+
+	if (id !== null) {
+		const result = await env.pick_your_favorite
+			.prepare(
+				`UPDATE subjects
+				 SET title = ?, description = ?, updated_at = CURRENT_TIMESTAMP
+				 WHERE id = ?
+				 RETURNING id, title, description, created_at, updated_at`,
+			)
+			.bind(title, description, id)
+			.first<SubjectRow>();
+
+		if (!result) {
+			return error('subject not found', 404);
+		}
+
+		return json({ subject: result });
+	}
+
+	const result = await env.pick_your_favorite
+		.prepare(
+			`INSERT INTO subjects (title, description)
+			 VALUES (?, ?)
+			 ON CONFLICT(title) DO UPDATE SET
+				description = excluded.description,
+				updated_at = CURRENT_TIMESTAMP
+			 RETURNING id, title, description, created_at, updated_at`,
+		)
+		.bind(title, description)
+		.first<SubjectRow>();
+
+	return json({ subject: result }, { status: 201 });
 }
 
 export default {
@@ -256,6 +394,14 @@ export default {
 
 		if (url.pathname === '/api/quiz-words' && request.method === 'POST') {
 			return createQuizWord(request, workerEnv);
+		}
+
+		if (url.pathname === '/api/subjects' && request.method === 'GET') {
+			return getSubjects(request, workerEnv);
+		}
+
+		if (url.pathname === '/api/subjects' && request.method === 'POST') {
+			return createOrUpdateSubject(request, workerEnv);
 		}
 
 		return error('Not found', 404);
