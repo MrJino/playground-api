@@ -67,7 +67,7 @@ type SubjectRequestBody = {
 
 const jsonHeaders = {
 	'Access-Control-Allow-Origin': '*',
-	'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+	'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
 	'Access-Control-Allow-Headers': 'Content-Type',
 };
 
@@ -301,6 +301,30 @@ async function createQuizWord(request: Request, env: WorkerEnv) {
 	return json({ word: result }, { status: 201 });
 }
 
+async function deleteQuizWord(request: Request, env: WorkerEnv) {
+	const url = new URL(request.url);
+	const id = parseOptionalInteger(url.searchParams.get('id'));
+
+	if (id === null) {
+		return error('id query parameter is required and must be an integer');
+	}
+
+	const result = await env.pick_your_favorite
+		.prepare(
+			`DELETE FROM quiz_words
+			 WHERE id = ?
+			 RETURNING id, subject_id, abbreviation, full_name, description, created_at, updated_at`,
+		)
+		.bind(id)
+		.first<QuizWordRow>();
+
+	if (!result) {
+		return error('quiz word not found', 404);
+	}
+
+	return json({ word: result });
+}
+
 async function getSubjects(_request: Request, env: WorkerEnv) {
 	const { results } = await env.pick_your_favorite
 		.prepare(
@@ -367,6 +391,30 @@ async function createOrUpdateSubject(request: Request, env: WorkerEnv) {
 	return json({ subject: result }, { status: 201 });
 }
 
+async function deleteSubject(request: Request, env: WorkerEnv) {
+	const url = new URL(request.url);
+	const id = parseOptionalInteger(url.searchParams.get('id'));
+
+	if (id === null) {
+		return error('id query parameter is required and must be an integer');
+	}
+
+	const result = await env.pick_your_favorite
+		.prepare(
+			`DELETE FROM subjects
+			 WHERE id = ?
+			 RETURNING id, title, description, created_at, updated_at`,
+		)
+		.bind(id)
+		.first<SubjectRow>();
+
+	if (!result) {
+		return error('subject not found', 404);
+	}
+
+	return json({ subject: result });
+}
+
 export default {
 	async fetch(request, env): Promise<Response> {
 		const workerEnv = env as WorkerEnv;
@@ -396,12 +444,20 @@ export default {
 			return createQuizWord(request, workerEnv);
 		}
 
+		if (url.pathname === '/api/quiz-words' && request.method === 'DELETE') {
+			return deleteQuizWord(request, workerEnv);
+		}
+
 		if (url.pathname === '/api/subjects' && request.method === 'GET') {
 			return getSubjects(request, workerEnv);
 		}
 
 		if (url.pathname === '/api/subjects' && request.method === 'POST') {
 			return createOrUpdateSubject(request, workerEnv);
+		}
+
+		if (url.pathname === '/api/subjects' && request.method === 'DELETE') {
+			return deleteSubject(request, workerEnv);
 		}
 
 		return error('Not found', 404);

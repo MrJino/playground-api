@@ -100,6 +100,25 @@ function createMockEnv(seed: StoredWinner[] = [], quizWordSeed: StoredQuizWord[]
 				async first() {
 					if (sql.includes('subjects')) {
 						const isUpdate = sql.trim().startsWith('UPDATE subjects');
+						const isDelete = sql.trim().startsWith('DELETE FROM subjects');
+						if (isDelete) {
+							const [id] = params;
+							const index = subjects.findIndex((subject) => subject.id === Number(id));
+
+							if (index === -1) {
+								return null;
+							}
+
+							const [deleted] = subjects.splice(index, 1);
+							for (let index = quizWords.length - 1; index >= 0; index -= 1) {
+								if (quizWords[index].subject_id === deleted.id) {
+									quizWords.splice(index, 1);
+								}
+							}
+
+							return deleted;
+						}
+
 						const [title, description, id] = params;
 
 						if (isUpdate) {
@@ -138,6 +157,20 @@ function createMockEnv(seed: StoredWinner[] = [], quizWordSeed: StoredQuizWord[]
 
 					if (sql.includes('quiz_words')) {
 						const isUpdate = sql.trim().startsWith('UPDATE quiz_words');
+						const isDelete = sql.trim().startsWith('DELETE FROM quiz_words');
+
+						if (isDelete) {
+							const [id] = params;
+							const index = quizWords.findIndex((word) => word.id === Number(id));
+
+							if (index === -1) {
+								return null;
+							}
+
+							const [deleted] = quizWords.splice(index, 1);
+							return deleted;
+						}
+
 						const [subjectId, abbreviation, fullName, description, id] = params;
 						const normalizedAbbreviation = String(abbreviation);
 						const current = isUpdate
@@ -378,6 +411,34 @@ describe('quiz words API', () => {
 			error: 'fullName is required',
 		});
 	});
+
+	it('deletes a quiz word', async () => {
+		const response = await fetchWithEnv(
+			new IncomingRequest('http://example.com/api/quiz-words?id=1', {
+				method: 'DELETE',
+			}),
+			createMockEnv(
+				[],
+				[
+					{
+						id: 1,
+						subject_id: 2,
+						abbreviation: 'SQL',
+						full_name: 'Structured Query Language',
+						description: 'Database language',
+						created_at: '2026-04-27 16:00:00',
+						updated_at: '2026-04-27 16:00:00',
+					},
+				],
+				[],
+			),
+		);
+
+		expect(response.status).toBe(200);
+		await expect(response.json()).resolves.toMatchObject({
+			word: { abbreviation: 'SQL' },
+		});
+	});
 });
 
 describe('subjects API', () => {
@@ -418,6 +479,32 @@ describe('subjects API', () => {
 		expect(response.status).toBe(200);
 		await expect(response.json()).resolves.toMatchObject({
 			subjects: [{ title: 'Computer Science' }],
+		});
+	});
+
+	it('deletes a subject', async () => {
+		const response = await fetchWithEnv(
+			new IncomingRequest('http://example.com/api/subjects?id=1', {
+				method: 'DELETE',
+			}),
+			createMockEnv(
+				[],
+				[],
+				[
+					{
+						id: 1,
+						title: 'Computer Science',
+						description: 'CS abbreviations',
+						created_at: '2026-04-27 16:00:00',
+						updated_at: '2026-04-27 16:00:00',
+					},
+				],
+			),
+		);
+
+		expect(response.status).toBe(200);
+		await expect(response.json()).resolves.toMatchObject({
+			subject: { title: 'Computer Science' },
 		});
 	});
 });
