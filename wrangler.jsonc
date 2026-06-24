@@ -16,8 +16,8 @@
 	],
 	"d1_databases": [
 		{
-			"binding": "pick_your_favorite",
-			"database_name": "pick-your-favorite",
+			"binding": "playground",
+			"database_name": "playground",
 			"database_id": "f6edc42f-61cd-4d0f-9074-4f9fed9912da",
 			"remote": true
 		}

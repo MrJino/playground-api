@@ -14,7 +14,7 @@ ON winners(menu, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_winners_menu_card
 ON winners(menu, card_id);
 
-CREATE TABLE IF NOT EXISTS subjects (
+CREATE TABLE IF NOT EXISTS quiz_topics (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   title TEXT NOT NULL,
   description TEXT,
@@ -22,22 +22,22 @@ CREATE TABLE IF NOT EXISTS subjects (
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_subjects_title
-ON subjects(title);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_quiz_topics_title
+ON quiz_topics(title);
 
 CREATE TABLE IF NOT EXISTS quiz_words (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  subject_id INTEGER NOT NULL,
+  topic_id INTEGER NOT NULL,
   abbreviation TEXT NOT NULL,
   full_name TEXT NOT NULL,
   description TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE
+  FOREIGN KEY (topic_id) REFERENCES quiz_topics(id) ON DELETE CASCADE
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_quiz_words_subject_abbreviation
-ON quiz_words(subject_id, abbreviation);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_quiz_words_topic_abbreviation
+ON quiz_words(topic_id, abbreviation);
 
-CREATE INDEX IF NOT EXISTS idx_quiz_words_subject_id
-ON quiz_words(subject_id);
+CREATE INDEX IF NOT EXISTS idx_quiz_words_topic_id
+ON quiz_words(topic_id);

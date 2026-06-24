@@ -15,7 +15,7 @@ type StoredWinner = {
 
 type StoredQuizWord = {
 	id: number;
-	subject_id: number | null;
+	topic_id: number | null;
 	abbreviation: string;
 	full_name: string;
 	description: string | null;
@@ -34,7 +34,7 @@ type StoredSubject = {
 function createMockEnv(seed: StoredWinner[] = [], quizWordSeed: StoredQuizWord[] = [], subjectSeed: StoredSubject[] = []) {
 	const winners = [...seed];
 	const quizWords = [...quizWordSeed];
-	const subjects = [...subjectSeed];
+	const quiz_topics = [...subjectSeed];
 
 	const db = {
 		prepare(sql: string) {
@@ -46,19 +46,21 @@ function createMockEnv(seed: StoredWinner[] = [], quizWordSeed: StoredQuizWord[]
 					return this;
 				},
 				async run() {
-					if (sql.includes('FROM subjects')) {
+					if (sql.includes('FROM quiz_topics')) {
 						return {
-							results: [...subjects].sort((a, b) => a.title.localeCompare(b.title) || a.id - b.id),
+							results: [...quiz_topics].sort((a, b) => a.title.localeCompare(b.title) || a.id - b.id),
 						};
 					}
 
 					if (sql.includes('FROM quiz_words')) {
-						const filteredWords = sql.includes('WHERE subject_id = ?')
-							? quizWords.filter((word) => word.subject_id === Number(params[0]))
+						const filteredWords = sql.includes('WHERE topic_id = ?')
+							? quizWords.filter((word) => word.topic_id === Number(params[0]))
 							: quizWords;
 
 						return {
-							results: [...filteredWords].sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id - a.id),
+							results: [...filteredWords]
+								.map((word) => ({ ...word }))
+								.sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id - a.id),
 						};
 					}
 
@@ -98,20 +100,20 @@ function createMockEnv(seed: StoredWinner[] = [], quizWordSeed: StoredQuizWord[]
 					};
 				},
 				async first() {
-					if (sql.includes('subjects')) {
-						const isUpdate = sql.trim().startsWith('UPDATE subjects');
-						const isDelete = sql.trim().startsWith('DELETE FROM subjects');
+					if (sql.includes('quiz_topics')) {
+						const isUpdate = sql.trim().startsWith('UPDATE quiz_topics');
+						const isDelete = sql.trim().startsWith('DELETE FROM quiz_topics');
 						if (isDelete) {
 							const [id] = params;
-							const index = subjects.findIndex((subject) => subject.id === Number(id));
+							const index = quiz_topics.findIndex((subject) => subject.id === Number(id));
 
 							if (index === -1) {
 								return null;
 							}
 
-							const [deleted] = subjects.splice(index, 1);
+							const [deleted] = quiz_topics.splice(index, 1);
 							for (let index = quizWords.length - 1; index >= 0; index -= 1) {
-								if (quizWords[index].subject_id === deleted.id) {
+								if (quizWords[index].topic_id === deleted.id) {
 									quizWords.splice(index, 1);
 								}
 							}
@@ -122,7 +124,7 @@ function createMockEnv(seed: StoredWinner[] = [], quizWordSeed: StoredQuizWord[]
 						const [title, description, id] = params;
 
 						if (isUpdate) {
-							const current = subjects.find((subject) => subject.id === Number(id));
+							const current = quiz_topics.find((subject) => subject.id === Number(id));
 
 							if (!current) {
 								return null;
@@ -134,7 +136,7 @@ function createMockEnv(seed: StoredWinner[] = [], quizWordSeed: StoredQuizWord[]
 							return current;
 						}
 
-						const current = subjects.find((subject) => subject.title === String(title));
+						const current = quiz_topics.find((subject) => subject.title === String(title));
 
 						if (current) {
 							current.description = description === null ? null : String(description);
@@ -143,14 +145,14 @@ function createMockEnv(seed: StoredWinner[] = [], quizWordSeed: StoredQuizWord[]
 						}
 
 						const subject: StoredSubject = {
-							id: subjects.length + 1,
+							id: quiz_topics.length + 1,
 							title: String(title),
 							description: description === null ? null : String(description),
 							created_at: '2026-04-27 16:00:00',
 							updated_at: '2026-04-27 16:00:00',
 						};
 
-						subjects.push(subject);
+						quiz_topics.push(subject);
 
 						return subject;
 					}
@@ -168,21 +170,21 @@ function createMockEnv(seed: StoredWinner[] = [], quizWordSeed: StoredQuizWord[]
 							}
 
 							const [deleted] = quizWords.splice(index, 1);
-							return deleted;
+							return { ...deleted };
 						}
 
-						const [subjectId, abbreviation, fullName, description, id] = params;
+						const [topicId, abbreviation, fullName, description, id] = params;
 						const normalizedAbbreviation = String(abbreviation);
 						const current = isUpdate
 							? quizWords.find((word) => word.id === Number(id))
 							: quizWords.find((word) => word.abbreviation === normalizedAbbreviation);
 
 						if (current) {
-							current.subject_id = subjectId === null ? null : Number(subjectId);
+							current.topic_id = topicId === null ? null : Number(topicId);
 							current.full_name = String(fullName);
 							current.description = description === null ? null : String(description);
 							current.updated_at = '2026-04-27 16:30:00';
-							return current;
+							return { ...current };
 						}
 
 						if (isUpdate) {
@@ -191,7 +193,7 @@ function createMockEnv(seed: StoredWinner[] = [], quizWordSeed: StoredQuizWord[]
 
 						const quizWord: StoredQuizWord = {
 							id: quizWords.length + 1,
-							subject_id: subjectId === null ? null : Number(subjectId),
+							topic_id: topicId === null ? null : Number(topicId),
 							abbreviation: normalizedAbbreviation,
 							full_name: String(fullName),
 							description: description === null ? null : String(description),
@@ -201,7 +203,7 @@ function createMockEnv(seed: StoredWinner[] = [], quizWordSeed: StoredQuizWord[]
 
 						quizWords.push(quizWord);
 
-						return quizWord;
+						return { ...quizWord };
 					}
 
 					const [menu, cardId, cardName, description, image] = params;
@@ -223,7 +225,7 @@ function createMockEnv(seed: StoredWinner[] = [], quizWordSeed: StoredQuizWord[]
 		},
 	};
 
-	return { pick_your_favorite: db } as unknown as Env;
+	return { playground: db } as unknown as Env;
 }
 
 async function fetchWithEnv(request: Request<unknown, IncomingRequestCfProperties>, env = createMockEnv()) {
@@ -324,7 +326,7 @@ describe('quiz words API', () => {
 			new IncomingRequest('http://example.com/api/quiz-words', {
 				method: 'POST',
 				body: JSON.stringify({
-					subjectId: 1,
+					topicId: 1,
 					abbreviation: 'api',
 					fullName: 'Application Programming Interface',
 					description: 'Interface for software communication',
@@ -335,7 +337,7 @@ describe('quiz words API', () => {
 		expect(response.status).toBe(201);
 		await expect(response.json()).resolves.toMatchObject({
 			word: {
-				subject_id: 1,
+				topic_id: 1,
 				abbreviation: 'API',
 				full_name: 'Application Programming Interface',
 				description: 'Interface for software communication',
@@ -349,7 +351,7 @@ describe('quiz words API', () => {
 			createMockEnv([], [
 				{
 					id: 1,
-					subject_id: null,
+					topic_id: null,
 					abbreviation: 'API',
 					full_name: 'Application Programming Interface',
 					description: 'Interface for software communication',
@@ -365,13 +367,13 @@ describe('quiz words API', () => {
 		});
 	});
 
-	it('lists quiz words for a subject', async () => {
+	it('lists quiz words for a topic', async () => {
 		const response = await fetchWithEnv(
-			new IncomingRequest('http://example.com/api/quiz-words?subjectId=2'),
+			new IncomingRequest('http://example.com/api/quiz-words?topicId=2'),
 			createMockEnv([], [
 				{
 					id: 1,
-					subject_id: 1,
+					topic_id: 1,
 					abbreviation: 'API',
 					full_name: 'Application Programming Interface',
 					description: null,
@@ -380,7 +382,7 @@ describe('quiz words API', () => {
 				},
 				{
 					id: 2,
-					subject_id: 2,
+					topic_id: 2,
 					abbreviation: 'SQL',
 					full_name: 'Structured Query Language',
 					description: null,
@@ -422,7 +424,7 @@ describe('quiz words API', () => {
 				[
 					{
 						id: 1,
-						subject_id: 2,
+						topic_id: 2,
 						abbreviation: 'SQL',
 						full_name: 'Structured Query Language',
 						description: 'Database language',
@@ -441,10 +443,10 @@ describe('quiz words API', () => {
 	});
 });
 
-describe('subjects API', () => {
-	it('creates a subject', async () => {
+describe('topics API', () => {
+	it('creates a topic', async () => {
 		const response = await fetchWithEnv(
-			new IncomingRequest('http://example.com/api/subjects', {
+			new IncomingRequest('http://example.com/api/topics', {
 				method: 'POST',
 				body: JSON.stringify({
 					title: 'Computer Science',
@@ -455,16 +457,16 @@ describe('subjects API', () => {
 
 		expect(response.status).toBe(201);
 		await expect(response.json()).resolves.toMatchObject({
-			subject: {
+			topic: {
 				title: 'Computer Science',
 				description: 'CS abbreviations',
 			},
 		});
 	});
 
-	it('lists subjects', async () => {
+	it('lists topics', async () => {
 		const response = await fetchWithEnv(
-			new IncomingRequest('http://example.com/api/subjects'),
+			new IncomingRequest('http://example.com/api/topics'),
 			createMockEnv([], [], [
 				{
 					id: 1,
@@ -478,13 +480,13 @@ describe('subjects API', () => {
 
 		expect(response.status).toBe(200);
 		await expect(response.json()).resolves.toMatchObject({
-			subjects: [{ title: 'Computer Science' }],
+			topics: [{ title: 'Computer Science' }],
 		});
 	});
 
-	it('deletes a subject', async () => {
+	it('deletes a topic', async () => {
 		const response = await fetchWithEnv(
-			new IncomingRequest('http://example.com/api/subjects?id=1', {
+			new IncomingRequest('http://example.com/api/topics?id=1', {
 				method: 'DELETE',
 			}),
 			createMockEnv(
@@ -504,7 +506,7 @@ describe('subjects API', () => {
 
 		expect(response.status).toBe(200);
 		await expect(response.json()).resolves.toMatchObject({
-			subject: { title: 'Computer Science' },
+			topic: { title: 'Computer Science' },
 		});
 	});
 });
