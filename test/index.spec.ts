@@ -5,12 +5,22 @@ const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 
 type StoredWinner = {
 	id: number;
-	menu: string;
+	topic_id: number;
 	card_id: number;
-	card_name: string;
+	created_at: string;
+};
+
+type StoredFavoriteTopic = {
+	id: number;
+	value: string;
+};
+
+type StoredFavoriteCard = {
+	id: number;
+	topic_id: number;
+	name: string;
 	description: string | null;
 	image: string | null;
-	created_at: string;
 };
 
 type StoredQuizWord = {
@@ -31,10 +41,42 @@ type StoredSubject = {
 	updated_at: string;
 };
 
-function createMockEnv(seed: StoredWinner[] = [], quizWordSeed: StoredQuizWord[] = [], subjectSeed: StoredSubject[] = []) {
+const defaultFavoriteTopics: StoredFavoriteTopic[] = [{ id: 1, value: '1990-female-singer' }];
+const defaultFavoriteCards: StoredFavoriteCard[] = [{ id: 10, topic_id: 1, name: 'Example Singer', description: null, image: null }];
+
+function createMockEnv(
+	seed: StoredWinner[] = [],
+	quizWordSeed: StoredQuizWord[] = [],
+	subjectSeed: StoredSubject[] = [],
+	favoriteTopicSeed: StoredFavoriteTopic[] = defaultFavoriteTopics,
+	favoriteCardSeed: StoredFavoriteCard[] = defaultFavoriteCards,
+) {
 	const winners = [...seed];
 	const quizWords = [...quizWordSeed];
 	const quiz_topics = [...subjectSeed];
+	const favoriteTopics = [...favoriteTopicSeed];
+	const favoriteCards = [...favoriteCardSeed];
+
+	function getFavoriteTopicByValue(value: string) {
+		return favoriteTopics.find((topic) => topic.value === value) || null;
+	}
+
+	function getFavoriteCardById(id: number) {
+		return favoriteCards.find((card) => card.id === id) || null;
+	}
+
+	function toWinnerResponse(winner: StoredWinner) {
+		const topic = favoriteTopics.find((item) => item.id === winner.topic_id);
+		const card = favoriteCards.find((item) => item.id === winner.card_id);
+
+		return {
+			...winner,
+			menu: topic?.value || '',
+			card_name: card?.name || '',
+			description: card?.description ?? null,
+			image: card?.image ?? null,
+		};
+	}
 
 	const db = {
 		prepare(sql: string) {
@@ -64,20 +106,20 @@ function createMockEnv(seed: StoredWinner[] = [], quizWordSeed: StoredQuizWord[]
 						};
 					}
 
-					const menu = String(params[0]);
-
 					if (sql.includes('COUNT(*) AS wins')) {
-						const summary = new Map<string, StoredWinner & { wins: number }>();
+						const menu = String(params[0]);
+						const topic = getFavoriteTopicByValue(menu);
+						const summary = new Map<number, ReturnType<typeof toWinnerResponse> & { wins: number }>();
 
-						for (const winner of winners.filter((item) => item.menu === menu)) {
-							const key = [winner.card_id, winner.card_name, winner.description, winner.image].join(':');
-							const current = summary.get(key);
+						for (const winner of winners.filter((item) => item.topic_id === topic?.id)) {
+							const current = summary.get(winner.card_id);
+							const response = toWinnerResponse(winner);
 
 							if (current) {
 								current.wins += 1;
 								current.created_at = current.created_at > winner.created_at ? current.created_at : winner.created_at;
 							} else {
-								summary.set(key, { ...winner, wins: 1 });
+								summary.set(winner.card_id, { ...response, wins: 1 });
 							}
 						}
 
@@ -95,8 +137,24 @@ function createMockEnv(seed: StoredWinner[] = [], quizWordSeed: StoredQuizWord[]
 						};
 					}
 
+					if (sql.includes('FROM favorite_winners w')) {
+						const menu = String(params[0]);
+						const topic = getFavoriteTopicByValue(menu);
+
+						return {
+							results: winners
+								.filter((item) => item.topic_id === topic?.id)
+								.map(toWinnerResponse)
+								.sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id - a.id),
+						};
+					}
+
+					const menu = String(params[0]);
 					return {
-						results: winners.filter((item) => item.menu === menu).sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id - a.id),
+						results: winners
+							.filter((item) => toWinnerResponse(item).menu === menu)
+							.map(toWinnerResponse)
+							.sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id - a.id),
 					};
 				},
 				async first() {
@@ -206,14 +264,30 @@ function createMockEnv(seed: StoredWinner[] = [], quizWordSeed: StoredQuizWord[]
 						return { ...quizWord };
 					}
 
-					const [menu, cardId, cardName, description, image] = params;
+					if (sql.includes('FROM favorite_topics t') && sql.includes('INNER JOIN favorite_cards c')) {
+						const [menu, cardId] = params;
+						const topic = getFavoriteTopicByValue(String(menu));
+						const card = getFavoriteCardById(Number(cardId));
+
+						if (!topic || !card || card.topic_id !== topic.id) {
+							return null;
+						}
+
+						return {
+							topic_id: topic.id,
+							menu: topic.value,
+							card_id: card.id,
+							card_name: card.name,
+							description: card.description,
+							image: card.image,
+						};
+					}
+
+					const [topicId, cardId] = params;
 					const winner: StoredWinner = {
 						id: winners.length + 1,
-						menu: String(menu),
+						topic_id: Number(topicId),
 						card_id: Number(cardId),
-						card_name: String(cardName),
-						description: description === null ? null : String(description),
-						image: image === null ? null : String(image),
 						created_at: '2026-04-27 16:00:00',
 					};
 
@@ -240,9 +314,6 @@ describe('winners API', () => {
 				body: JSON.stringify({
 					menu: '1990-female-singer',
 					cardId: 10,
-					cardName: 'Example Singer',
-					description: 'final winner',
-					image: 'https://example.com/singer.jpg',
 				}),
 			}),
 		);
@@ -263,11 +334,8 @@ describe('winners API', () => {
 			createMockEnv([
 				{
 					id: 1,
-					menu: '1990-female-singer',
+					topic_id: 1,
 					card_id: 10,
-					card_name: 'Example Singer',
-					description: null,
-					image: null,
 					created_at: '2026-04-27 15:00:00',
 				},
 			]),
@@ -285,20 +353,14 @@ describe('winners API', () => {
 			createMockEnv([
 				{
 					id: 1,
-					menu: '1990-female-singer',
+					topic_id: 1,
 					card_id: 10,
-					card_name: 'Example Singer',
-					description: null,
-					image: null,
 					created_at: '2026-04-27 15:00:00',
 				},
 				{
 					id: 2,
-					menu: '1990-female-singer',
+					topic_id: 1,
 					card_id: 10,
-					card_name: 'Example Singer',
-					description: null,
-					image: null,
 					created_at: '2026-04-27 16:00:00',
 				},
 			]),

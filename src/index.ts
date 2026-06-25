@@ -4,15 +4,20 @@ type WorkerEnv = Env & {
 
 type WinnerRow = {
 	id: number;
-	menu: string;
+	topic_id: number;
 	card_id: number;
-	card_name: string;
-	description: string | null;
-	image: string | null;
 	created_at: string;
 };
 
+type WinnerResponseRow = WinnerRow & {
+	menu: string;
+	card_name: string;
+	description: string | null;
+	image: string | null;
+};
+
 type WinnerSummaryRow = {
+	topic_id: number;
 	card_id: number;
 	card_name: string;
 	description: string | null;
@@ -25,10 +30,6 @@ type WinnerRequestBody = {
 	menu?: unknown;
 	cardId?: unknown;
 	card_id?: unknown;
-	cardName?: unknown;
-	card_name?: unknown;
-	description?: unknown;
-	image?: unknown;
 };
 
 type QuizWordRow = {
@@ -74,7 +75,6 @@ type FavoriteTopicRequestBody = {
 type FavoriteCardRow = {
 	id: number;
 	topic_id: number;
-	source_card_id: number;
 	name: string;
 	description: string | null;
 	image: string | null;
@@ -86,8 +86,6 @@ type FavoriteCardRequestBody = {
 	id?: unknown;
 	topicId?: unknown;
 	topic_id?: unknown;
-	sourceCardId?: unknown;
-	source_card_id?: unknown;
 	name?: unknown;
 	description?: unknown;
 	image?: unknown;
@@ -170,13 +168,23 @@ async function getWinners(request: Request, env: WorkerEnv) {
 
 	const { results } = await env.playground
 		.prepare(
-			`SELECT id, menu, card_id, card_name, description, image, created_at
-			 FROM winners
-			 WHERE menu = ?
-			 ORDER BY created_at DESC, id DESC`,
+			`SELECT
+				w.id,
+				w.topic_id,
+				t.value AS menu,
+				w.card_id,
+				c.name AS card_name,
+				c.description,
+				c.image,
+				w.created_at
+			 FROM favorite_winners w
+			 INNER JOIN favorite_topics t ON t.id = w.topic_id
+			 INNER JOIN favorite_cards c ON c.id = w.card_id
+			 WHERE t.value = ?
+			 ORDER BY w.created_at DESC, w.id DESC`,
 		)
 		.bind(menu)
-		.run<WinnerRow>();
+		.run<WinnerResponseRow>();
 
 	return json({ winners: results });
 }
@@ -192,9 +200,6 @@ async function createWinner(request: Request, env: WorkerEnv) {
 
 	const menu = requiredString(body.menu);
 	const cardId = parseCardId(body.cardId ?? body.card_id);
-	const cardName = requiredString(body.cardName ?? body.card_name);
-	const description = optionalString(body.description);
-	const image = optionalString(body.image);
 
 	if (!menu) {
 		return error('menu is required');
@@ -204,20 +209,36 @@ async function createWinner(request: Request, env: WorkerEnv) {
 		return error('cardId is required and must be an integer');
 	}
 
-	if (!cardName) {
-		return error('cardName is required');
+	const card = await env.playground
+		.prepare(
+			`SELECT
+				t.id AS topic_id,
+				t.value AS menu,
+				c.id AS card_id,
+				c.name AS card_name,
+				c.description,
+				c.image
+			 FROM favorite_topics t
+			 INNER JOIN favorite_cards c ON c.topic_id = t.id
+			 WHERE t.value = ? AND c.id = ?`,
+		)
+		.bind(menu, cardId)
+		.first<Omit<WinnerResponseRow, 'id' | 'created_at'>>();
+
+	if (!card) {
+		return error('favorite card not found', 404);
 	}
 
 	const result = await env.playground
 		.prepare(
-			`INSERT INTO winners (menu, card_id, card_name, description, image)
-			 VALUES (?, ?, ?, ?, ?)
-			 RETURNING id, menu, card_id, card_name, description, image, created_at`,
+			`INSERT INTO favorite_winners (topic_id, card_id)
+			 VALUES (?, ?)
+			 RETURNING id, topic_id, card_id, created_at`,
 		)
-		.bind(menu, cardId, cardName, description, image)
+		.bind(card.topic_id, card.card_id)
 		.first<WinnerRow>();
 
-	return json({ winner: result }, { status: 201 });
+	return json({ winner: { ...card, ...result } }, { status: 201 });
 }
 
 async function getWinnerSummary(request: Request, env: WorkerEnv) {
@@ -231,16 +252,19 @@ async function getWinnerSummary(request: Request, env: WorkerEnv) {
 	const { results } = await env.playground
 		.prepare(
 			`SELECT
-				card_id,
-				card_name,
-				description,
-				image,
+				w.topic_id,
+				w.card_id,
+				c.name AS card_name,
+				c.description,
+				c.image,
 				COUNT(*) AS wins,
-				MAX(created_at) AS latest_win_at
-			 FROM winners
-			 WHERE menu = ?
-			 GROUP BY card_id, card_name, description, image
-			 ORDER BY wins DESC, latest_win_at DESC, card_id ASC`,
+				MAX(w.created_at) AS latest_win_at
+			 FROM favorite_winners w
+			 INNER JOIN favorite_topics t ON t.id = w.topic_id
+			 INNER JOIN favorite_cards c ON c.id = w.card_id
+			 WHERE t.value = ?
+			 GROUP BY w.topic_id, w.card_id, c.name, c.description, c.image
+			 ORDER BY wins DESC, latest_win_at DESC, w.card_id ASC`,
 		)
 		.bind(menu)
 		.run<WinnerSummaryRow>();
@@ -482,16 +506,16 @@ async function getFavoriteCards(request: Request, env: WorkerEnv) {
 	const statement =
 		topicId === null
 			? env.playground.prepare(
-					`SELECT id, topic_id, source_card_id, name, description, image, created_at, updated_at
+					`SELECT id, topic_id, name, description, image, created_at, updated_at
 					 FROM favorite_cards
-					 ORDER BY topic_id ASC, source_card_id ASC, id ASC`,
+					 ORDER BY topic_id ASC, id ASC`,
 				)
 			: env.playground
 					.prepare(
-						`SELECT id, topic_id, source_card_id, name, description, image, created_at, updated_at
+						`SELECT id, topic_id, name, description, image, created_at, updated_at
 						 FROM favorite_cards
 						 WHERE topic_id = ?
-						 ORDER BY source_card_id ASC, id ASC`,
+						 ORDER BY id ASC`,
 					)
 					.bind(topicId);
 
@@ -511,7 +535,6 @@ async function createOrUpdateFavoriteCard(request: Request, env: WorkerEnv) {
 
 	const id = parseOptionalInteger(body.id);
 	const topicId = parseOptionalInteger(body.topicId ?? body.topic_id);
-	const sourceCardId = parseOptionalInteger(body.sourceCardId ?? body.source_card_id);
 	const name = requiredString(body.name);
 	const description = optionalString(body.description);
 	const image = optionalString(body.image);
@@ -524,10 +547,6 @@ async function createOrUpdateFavoriteCard(request: Request, env: WorkerEnv) {
 		return error('topicId is required and must be an integer');
 	}
 
-	if (sourceCardId === null) {
-		return error('sourceCardId is required and must be an integer');
-	}
-
 	if (!name) {
 		return error('name is required');
 	}
@@ -536,11 +555,11 @@ async function createOrUpdateFavoriteCard(request: Request, env: WorkerEnv) {
 		const result = await env.playground
 			.prepare(
 				`UPDATE favorite_cards
-				 SET topic_id = ?, source_card_id = ?, name = ?, description = ?, image = ?, updated_at = CURRENT_TIMESTAMP
+				 SET topic_id = ?, name = ?, description = ?, image = ?, updated_at = CURRENT_TIMESTAMP
 				 WHERE id = ?
-				 RETURNING id, topic_id, source_card_id, name, description, image, created_at, updated_at`,
+				 RETURNING id, topic_id, name, description, image, created_at, updated_at`,
 			)
-			.bind(topicId, sourceCardId, name, description, image, id)
+			.bind(topicId, name, description, image, id)
 			.first<FavoriteCardRow>();
 
 		if (!result) {
@@ -552,16 +571,11 @@ async function createOrUpdateFavoriteCard(request: Request, env: WorkerEnv) {
 
 	const result = await env.playground
 		.prepare(
-			`INSERT INTO favorite_cards (topic_id, source_card_id, name, description, image)
-			 VALUES (?, ?, ?, ?, ?)
-			 ON CONFLICT(topic_id, source_card_id) DO UPDATE SET
-				name = excluded.name,
-				description = excluded.description,
-				image = excluded.image,
-				updated_at = CURRENT_TIMESTAMP
-			 RETURNING id, topic_id, source_card_id, name, description, image, created_at, updated_at`,
+			`INSERT INTO favorite_cards (topic_id, name, description, image)
+			 VALUES (?, ?, ?, ?)
+			 RETURNING id, topic_id, name, description, image, created_at, updated_at`,
 		)
-		.bind(topicId, sourceCardId, name, description, image)
+		.bind(topicId, name, description, image)
 		.first<FavoriteCardRow>();
 
 	return json({ card: result }, { status: 201 });
@@ -579,7 +593,7 @@ async function deleteFavoriteCard(request: Request, env: WorkerEnv) {
 		.prepare(
 			`DELETE FROM favorite_cards
 			 WHERE id = ?
-			 RETURNING id, topic_id, source_card_id, name, description, image, created_at, updated_at`,
+			 RETURNING id, topic_id, name, description, image, created_at, updated_at`,
 		)
 		.bind(id)
 		.first<FavoriteCardRow>();
