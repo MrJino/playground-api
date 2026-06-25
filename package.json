@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "deploy": "wrangler deploy",
+    "db:apply": "wrangler d1 execute playground --remote --file schema.sql",
     "dev": "wrangler dev",
     "start": "wrangler dev",
     "test": "vitest",

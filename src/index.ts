@@ -51,6 +51,48 @@ type QuizWordRequestBody = {
 	description?: unknown;
 };
 
+type FavoriteTopicRow = {
+	id: number;
+	value: string;
+	label: string;
+	country: string | null;
+	icon: string | null;
+	era: number | null;
+	created_at: string;
+	updated_at: string;
+};
+
+type FavoriteTopicRequestBody = {
+	id?: unknown;
+	value?: unknown;
+	label?: unknown;
+	country?: unknown;
+	icon?: unknown;
+	era?: unknown;
+};
+
+type FavoriteCardRow = {
+	id: number;
+	topic_id: number;
+	source_card_id: number;
+	name: string;
+	description: string | null;
+	image: string | null;
+	created_at: string;
+	updated_at: string;
+};
+
+type FavoriteCardRequestBody = {
+	id?: unknown;
+	topicId?: unknown;
+	topic_id?: unknown;
+	sourceCardId?: unknown;
+	source_card_id?: unknown;
+	name?: unknown;
+	description?: unknown;
+	image?: unknown;
+};
+
 type TopicRow = {
 	id: number;
 	title: string;
@@ -325,6 +367,230 @@ async function deleteQuizWord(request: Request, env: WorkerEnv) {
 	return json({ word: result });
 }
 
+async function getFavoriteTopics(_request: Request, env: WorkerEnv) {
+	const { results } = await env.playground
+		.prepare(
+			`SELECT id, value, label, country, icon, era, created_at, updated_at
+			 FROM favorite_topics
+			 ORDER BY era IS NULL ASC, era DESC, label ASC, id ASC`,
+		)
+		.run<FavoriteTopicRow>();
+
+	return json({ topics: results });
+}
+
+async function createOrUpdateFavoriteTopic(request: Request, env: WorkerEnv) {
+	let body: FavoriteTopicRequestBody;
+
+	try {
+		body = (await request.json()) as FavoriteTopicRequestBody;
+	} catch {
+		return error('Request body must be valid JSON');
+	}
+
+	const id = parseOptionalInteger(body.id);
+	const value = requiredString(body.value);
+	const label = requiredString(body.label);
+	const country = optionalString(body.country);
+	const icon = optionalString(body.icon);
+	const era = parseOptionalInteger(body.era);
+
+	if (id === null && body.id !== undefined) {
+		return error('id must be an integer');
+	}
+
+	if (era === null && body.era !== undefined && body.era !== null && body.era !== '') {
+		return error('era must be an integer');
+	}
+
+	if (!value) {
+		return error('value is required');
+	}
+
+	if (!label) {
+		return error('label is required');
+	}
+
+	if (id !== null) {
+		const result = await env.playground
+			.prepare(
+				`UPDATE favorite_topics
+				 SET value = ?, label = ?, country = ?, icon = ?, era = ?, updated_at = CURRENT_TIMESTAMP
+				 WHERE id = ?
+				 RETURNING id, value, label, country, icon, era, created_at, updated_at`,
+			)
+			.bind(value, label, country, icon, era, id)
+			.first<FavoriteTopicRow>();
+
+		if (!result) {
+			return error('favorite topic not found', 404);
+		}
+
+		return json({ topic: result });
+	}
+
+	const result = await env.playground
+		.prepare(
+			`INSERT INTO favorite_topics (value, label, country, icon, era)
+			 VALUES (?, ?, ?, ?, ?)
+			 ON CONFLICT(value) DO UPDATE SET
+				label = excluded.label,
+				country = excluded.country,
+				icon = excluded.icon,
+				era = excluded.era,
+				updated_at = CURRENT_TIMESTAMP
+			 RETURNING id, value, label, country, icon, era, created_at, updated_at`,
+		)
+		.bind(value, label, country, icon, era)
+		.first<FavoriteTopicRow>();
+
+	return json({ topic: result }, { status: 201 });
+}
+
+async function deleteFavoriteTopic(request: Request, env: WorkerEnv) {
+	const url = new URL(request.url);
+	const id = parseOptionalInteger(url.searchParams.get('id'));
+
+	if (id === null) {
+		return error('id query parameter is required and must be an integer');
+	}
+
+	const result = await env.playground
+		.prepare(
+			`DELETE FROM favorite_topics
+			 WHERE id = ?
+			 RETURNING id, value, label, country, icon, era, created_at, updated_at`,
+		)
+		.bind(id)
+		.first<FavoriteTopicRow>();
+
+	if (!result) {
+		return error('favorite topic not found', 404);
+	}
+
+	return json({ topic: result });
+}
+
+async function getFavoriteCards(request: Request, env: WorkerEnv) {
+	const url = new URL(request.url);
+	const topicId = parseOptionalInteger(url.searchParams.get('topicId') ?? url.searchParams.get('topic_id'));
+
+	if (topicId === null && (url.searchParams.has('topicId') || url.searchParams.has('topic_id'))) {
+		return error('topicId must be an integer');
+	}
+
+	const statement =
+		topicId === null
+			? env.playground.prepare(
+					`SELECT id, topic_id, source_card_id, name, description, image, created_at, updated_at
+					 FROM favorite_cards
+					 ORDER BY topic_id ASC, source_card_id ASC, id ASC`,
+				)
+			: env.playground
+					.prepare(
+						`SELECT id, topic_id, source_card_id, name, description, image, created_at, updated_at
+						 FROM favorite_cards
+						 WHERE topic_id = ?
+						 ORDER BY source_card_id ASC, id ASC`,
+					)
+					.bind(topicId);
+
+	const { results } = await statement.run<FavoriteCardRow>();
+
+	return json({ cards: results });
+}
+
+async function createOrUpdateFavoriteCard(request: Request, env: WorkerEnv) {
+	let body: FavoriteCardRequestBody;
+
+	try {
+		body = (await request.json()) as FavoriteCardRequestBody;
+	} catch {
+		return error('Request body must be valid JSON');
+	}
+
+	const id = parseOptionalInteger(body.id);
+	const topicId = parseOptionalInteger(body.topicId ?? body.topic_id);
+	const sourceCardId = parseOptionalInteger(body.sourceCardId ?? body.source_card_id);
+	const name = requiredString(body.name);
+	const description = optionalString(body.description);
+	const image = optionalString(body.image);
+
+	if (id === null && body.id !== undefined) {
+		return error('id must be an integer');
+	}
+
+	if (topicId === null) {
+		return error('topicId is required and must be an integer');
+	}
+
+	if (sourceCardId === null) {
+		return error('sourceCardId is required and must be an integer');
+	}
+
+	if (!name) {
+		return error('name is required');
+	}
+
+	if (id !== null) {
+		const result = await env.playground
+			.prepare(
+				`UPDATE favorite_cards
+				 SET topic_id = ?, source_card_id = ?, name = ?, description = ?, image = ?, updated_at = CURRENT_TIMESTAMP
+				 WHERE id = ?
+				 RETURNING id, topic_id, source_card_id, name, description, image, created_at, updated_at`,
+			)
+			.bind(topicId, sourceCardId, name, description, image, id)
+			.first<FavoriteCardRow>();
+
+		if (!result) {
+			return error('favorite card not found', 404);
+		}
+
+		return json({ card: result });
+	}
+
+	const result = await env.playground
+		.prepare(
+			`INSERT INTO favorite_cards (topic_id, source_card_id, name, description, image)
+			 VALUES (?, ?, ?, ?, ?)
+			 ON CONFLICT(topic_id, source_card_id) DO UPDATE SET
+				name = excluded.name,
+				description = excluded.description,
+				image = excluded.image,
+				updated_at = CURRENT_TIMESTAMP
+			 RETURNING id, topic_id, source_card_id, name, description, image, created_at, updated_at`,
+		)
+		.bind(topicId, sourceCardId, name, description, image)
+		.first<FavoriteCardRow>();
+
+	return json({ card: result }, { status: 201 });
+}
+
+async function deleteFavoriteCard(request: Request, env: WorkerEnv) {
+	const url = new URL(request.url);
+	const id = parseOptionalInteger(url.searchParams.get('id'));
+
+	if (id === null) {
+		return error('id query parameter is required and must be an integer');
+	}
+
+	const result = await env.playground
+		.prepare(
+			`DELETE FROM favorite_cards
+			 WHERE id = ?
+			 RETURNING id, topic_id, source_card_id, name, description, image, created_at, updated_at`,
+		)
+		.bind(id)
+		.first<FavoriteCardRow>();
+
+	if (!result) {
+		return error('favorite card not found', 404);
+	}
+
+	return json({ card: result });
+}
+
 async function getTopics(_request: Request, env: WorkerEnv) {
 	const { results } = await env.playground
 		.prepare(
@@ -447,6 +713,30 @@ export default {
 
 			if (url.pathname === '/api/quiz-words' && request.method === 'DELETE') {
 				return deleteQuizWord(request, workerEnv);
+			}
+
+			if (url.pathname === '/api/favorite-topics' && request.method === 'GET') {
+				return getFavoriteTopics(request, workerEnv);
+			}
+
+			if (url.pathname === '/api/favorite-topics' && request.method === 'POST') {
+				return createOrUpdateFavoriteTopic(request, workerEnv);
+			}
+
+			if (url.pathname === '/api/favorite-topics' && request.method === 'DELETE') {
+				return deleteFavoriteTopic(request, workerEnv);
+			}
+
+			if (url.pathname === '/api/favorite-cards' && request.method === 'GET') {
+				return getFavoriteCards(request, workerEnv);
+			}
+
+			if (url.pathname === '/api/favorite-cards' && request.method === 'POST') {
+				return createOrUpdateFavoriteCard(request, workerEnv);
+			}
+
+			if (url.pathname === '/api/favorite-cards' && request.method === 'DELETE') {
+				return deleteFavoriteCard(request, workerEnv);
 			}
 
 			if (url.pathname === '/api/topics' && request.method === 'GET') {
