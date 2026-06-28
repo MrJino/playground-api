@@ -137,6 +137,10 @@ function requiredString(value: unknown) {
 	return typeof value === 'string' ? value.trim() : '';
 }
 
+function escapeLike(value: string) {
+	return value.replace(/[\\%_]/g, (match) => `\\${match}`);
+}
+
 function parseCardId(value: unknown) {
 	if (typeof value === 'number' && Number.isInteger(value)) {
 		return value;
@@ -275,30 +279,67 @@ async function getWinnerSummary(request: Request, env: WorkerEnv) {
 async function getQuizWords(_request: Request, env: WorkerEnv) {
 	const url = new URL(_request.url);
 	const topicId = parseOptionalInteger(url.searchParams.get('topicId') ?? url.searchParams.get('topic_id'));
+	const limit = parseOptionalInteger(url.searchParams.get('limit'));
+	const offset = parseOptionalInteger(url.searchParams.get('offset'));
+	const query = requiredString(url.searchParams.get('q'));
 
 	if (topicId === null && (url.searchParams.has('topicId') || url.searchParams.has('topic_id'))) {
 		return error('topicId must be an integer');
 	}
 
-	const statement =
-		topicId === null
-			? env.playground.prepare(
-					`SELECT id, topic_id, abbreviation, full_name, description, created_at, updated_at
-					 FROM quiz_words
-					 ORDER BY created_at DESC, id DESC`,
-				)
-			: env.playground
-					.prepare(
-						`SELECT id, topic_id, abbreviation, full_name, description, created_at, updated_at
-						 FROM quiz_words
-						 WHERE topic_id = ?
-						 ORDER BY created_at DESC, id DESC`,
-					)
-					.bind(topicId);
+	if (limit === null && url.searchParams.has('limit')) {
+		return error('limit must be an integer');
+	}
+
+	if (offset === null && url.searchParams.has('offset')) {
+		return error('offset must be an integer');
+	}
+
+	if (limit !== null && limit < 1) {
+		return error('limit must be greater than 0');
+	}
+
+	if (offset !== null && offset < 0) {
+		return error('offset must be greater than or equal to 0');
+	}
+
+	const whereClauses: string[] = [];
+	const params: unknown[] = [];
+
+	if (topicId !== null) {
+		whereClauses.push('topic_id = ?');
+		params.push(topicId);
+	}
+
+	if (query) {
+		const pattern = `%${escapeLike(query.toLowerCase())}%`;
+		whereClauses.push(
+			`(LOWER(abbreviation) LIKE ? ESCAPE '\\'
+			 OR LOWER(full_name) LIKE ? ESCAPE '\\'
+			 OR LOWER(COALESCE(description, '')) LIKE ? ESCAPE '\\')`,
+		);
+		params.push(pattern, pattern, pattern);
+	}
+
+	const sql = `SELECT id, topic_id, abbreviation, full_name, description, created_at, updated_at
+		FROM quiz_words
+		${whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : ''}
+		ORDER BY created_at DESC, id DESC
+		${limit === null ? '' : 'LIMIT ? OFFSET ?'}`;
+
+	if (limit !== null) {
+		params.push(limit, offset ?? 0);
+	}
+
+	const preparedStatement = env.playground.prepare(sql);
+	const statement = params.length ? preparedStatement.bind(...params) : preparedStatement;
 
 	const { results } = await statement.run<QuizWordRow>();
 
-	return json({ words: results });
+	return json({
+		words: results,
+		pagination: limit === null ? null : { limit, offset: offset ?? 0, hasMore: results.length === limit },
+	});
 }
 
 async function createQuizWord(request: Request, env: WorkerEnv) {
@@ -498,30 +539,53 @@ async function deleteFavoriteTopic(request: Request, env: WorkerEnv) {
 async function getFavoriteCards(request: Request, env: WorkerEnv) {
 	const url = new URL(request.url);
 	const topicId = parseOptionalInteger(url.searchParams.get('topicId') ?? url.searchParams.get('topic_id'));
+	const limit = parseOptionalInteger(url.searchParams.get('limit'));
+	const offset = parseOptionalInteger(url.searchParams.get('offset'));
 
 	if (topicId === null && (url.searchParams.has('topicId') || url.searchParams.has('topic_id'))) {
 		return error('topicId must be an integer');
 	}
 
-	const statement =
-		topicId === null
-			? env.playground.prepare(
-					`SELECT id, topic_id, name, description, image, created_at, updated_at
-					 FROM favorite_cards
-					 ORDER BY topic_id ASC, id ASC`,
-				)
-			: env.playground
-					.prepare(
-						`SELECT id, topic_id, name, description, image, created_at, updated_at
-						 FROM favorite_cards
-						 WHERE topic_id = ?
-						 ORDER BY id ASC`,
-					)
-					.bind(topicId);
+	if (limit === null && url.searchParams.has('limit')) {
+		return error('limit must be an integer');
+	}
+
+	if (offset === null && url.searchParams.has('offset')) {
+		return error('offset must be an integer');
+	}
+
+	if (limit !== null && limit < 1) {
+		return error('limit must be greater than 0');
+	}
+
+	if (offset !== null && offset < 0) {
+		return error('offset must be greater than or equal to 0');
+	}
+
+	const params: unknown[] = [];
+	const sql = `SELECT id, topic_id, name, description, image, created_at, updated_at
+		FROM favorite_cards
+		${topicId === null ? '' : 'WHERE topic_id = ?'}
+		ORDER BY ${topicId === null ? 'topic_id ASC, ' : ''}id ASC
+		${limit === null ? '' : 'LIMIT ? OFFSET ?'}`;
+
+	if (topicId !== null) {
+		params.push(topicId);
+	}
+
+	if (limit !== null) {
+		params.push(limit, offset ?? 0);
+	}
+
+	const preparedStatement = env.playground.prepare(sql);
+	const statement = params.length ? preparedStatement.bind(...params) : preparedStatement;
 
 	const { results } = await statement.run<FavoriteCardRow>();
 
-	return json({ cards: results });
+	return json({
+		cards: results,
+		pagination: limit === null ? null : { limit, offset: offset ?? 0, hasMore: results.length === limit },
+	});
 }
 
 async function createOrUpdateFavoriteCard(request: Request, env: WorkerEnv) {

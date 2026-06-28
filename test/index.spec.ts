@@ -95,15 +95,48 @@ function createMockEnv(
 					}
 
 					if (sql.includes('FROM quiz_words')) {
-						const filteredWords = sql.includes('WHERE topic_id = ?')
-							? quizWords.filter((word) => word.topic_id === Number(params[0]))
-							: quizWords;
+						let nextParamIndex = 0;
+						let filteredWords = [...quizWords];
+						if (sql.includes('topic_id = ?')) {
+							filteredWords = filteredWords.filter((word) => word.topic_id === Number(params[nextParamIndex]));
+							nextParamIndex += 1;
+						}
+						if (sql.includes('LOWER(abbreviation) LIKE ?')) {
+							const query = String(params[nextParamIndex]).replaceAll('%', '').toLowerCase();
+							filteredWords = filteredWords.filter((word) =>
+								`${word.abbreviation} ${word.full_name} ${word.description || ''}`.toLowerCase().includes(query),
+							);
+							nextParamIndex += 3;
+						}
+						const hasLimit = sql.includes('LIMIT ? OFFSET ?');
+						const sortedWords = [...filteredWords]
+							.map((word) => ({ ...word }))
+							.sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id - a.id);
+						const results = hasLimit
+							? sortedWords.slice(Number(params[nextParamIndex + 1] || 0), Number(params[nextParamIndex + 1] || 0) + Number(params[nextParamIndex]))
+							: sortedWords;
 
 						return {
-							results: [...filteredWords]
-								.map((word) => ({ ...word }))
-								.sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id - a.id),
+							results,
 						};
+					}
+
+					if (sql.includes('FROM favorite_cards')) {
+						let nextParamIndex = 0;
+						let filteredCards = [...favoriteCards];
+
+						if (sql.includes('WHERE topic_id = ?')) {
+							filteredCards = filteredCards.filter((card) => card.topic_id === Number(params[nextParamIndex]));
+							nextParamIndex += 1;
+						}
+
+						const sortedCards = [...filteredCards].map((card) => ({ ...card })).sort((a, b) => a.topic_id - b.topic_id || a.id - b.id);
+						const hasLimit = sql.includes('LIMIT ? OFFSET ?');
+						const results = hasLimit
+							? sortedCards.slice(Number(params[nextParamIndex + 1] || 0), Number(params[nextParamIndex + 1] || 0) + Number(params[nextParamIndex]))
+							: sortedCards;
+
+						return { results };
 					}
 
 					if (sql.includes('COUNT(*) AS wins')) {
@@ -429,6 +462,69 @@ describe('quiz words API', () => {
 		});
 	});
 
+	it('paginates quiz words', async () => {
+		const response = await fetchWithEnv(
+			new IncomingRequest('http://example.com/api/quiz-words?limit=1&offset=1'),
+			createMockEnv([], [
+				{
+					id: 1,
+					topic_id: null,
+					abbreviation: 'API',
+					full_name: 'Application Programming Interface',
+					description: null,
+					created_at: '2026-04-27 16:00:00',
+					updated_at: '2026-04-27 16:00:00',
+				},
+				{
+					id: 2,
+					topic_id: null,
+					abbreviation: 'SQL',
+					full_name: 'Structured Query Language',
+					description: null,
+					created_at: '2026-04-27 16:10:00',
+					updated_at: '2026-04-27 16:10:00',
+				},
+			]),
+		);
+
+		expect(response.status).toBe(200);
+		await expect(response.json()).resolves.toMatchObject({
+			words: [{ abbreviation: 'API' }],
+			pagination: { limit: 1, offset: 1, hasMore: true },
+		});
+	});
+
+	it('searches quiz words', async () => {
+		const response = await fetchWithEnv(
+			new IncomingRequest('http://example.com/api/quiz-words?q=structured&limit=10&offset=0'),
+			createMockEnv([], [
+				{
+					id: 1,
+					topic_id: null,
+					abbreviation: 'API',
+					full_name: 'Application Programming Interface',
+					description: null,
+					created_at: '2026-04-27 16:00:00',
+					updated_at: '2026-04-27 16:00:00',
+				},
+				{
+					id: 2,
+					topic_id: null,
+					abbreviation: 'SQL',
+					full_name: 'Structured Query Language',
+					description: null,
+					created_at: '2026-04-27 16:10:00',
+					updated_at: '2026-04-27 16:10:00',
+				},
+			]),
+		);
+
+		expect(response.status).toBe(200);
+		await expect(response.json()).resolves.toMatchObject({
+			words: [{ abbreviation: 'SQL' }],
+		});
+	});
+
 	it('lists quiz words for a topic', async () => {
 		const response = await fetchWithEnv(
 			new IncomingRequest('http://example.com/api/quiz-words?topicId=2'),
@@ -501,6 +597,30 @@ describe('quiz words API', () => {
 		expect(response.status).toBe(200);
 		await expect(response.json()).resolves.toMatchObject({
 			word: { abbreviation: 'SQL' },
+		});
+	});
+});
+
+describe('favorite cards API', () => {
+	it('paginates favorite cards without a selected topic', async () => {
+		const response = await fetchWithEnv(
+			new IncomingRequest('http://example.com/api/favorite-cards?limit=1&offset=1'),
+			createMockEnv(
+				[],
+				[],
+				[],
+				defaultFavoriteTopics,
+				[
+					{ id: 10, topic_id: 1, name: 'First Card', description: null, image: null },
+					{ id: 11, topic_id: 1, name: 'Second Card', description: null, image: null },
+				],
+			),
+		);
+
+		expect(response.status).toBe(200);
+		await expect(response.json()).resolves.toMatchObject({
+			cards: [{ id: 11, name: 'Second Card' }],
+			pagination: { limit: 1, offset: 1, hasMore: true },
 		});
 	});
 });
